@@ -74,6 +74,14 @@ td button:hover { border-color: var(--navy); }
 
 .note { color: var(--muted); font-size: 0.85rem; }
 
+/* Position column: only shown on the FLEX tab */
+.pos-col { display: none; }
+table.show-pos .pos-col { display: table-cell; }
+.pos-badge { display: inline-block; min-width: 32px; text-align: center; padding: 1px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; color: #fff; }
+.pos-RB { background: #2f8f5b; }
+.pos-WR { background: #2f6fdb; }
+.pos-TE { background: #c2702a; }
+
 /* Comparison */
 .compare-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; margin-bottom: 18px; }
 .compare-grid div { padding: 7px 10px; border-bottom: 1px solid var(--line); }

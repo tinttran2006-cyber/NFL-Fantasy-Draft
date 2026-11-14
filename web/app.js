@@ -143,8 +143,26 @@ function renderPositionChart() {
 
 /* ---------- Rankings ---------- */
 
+// FLEX = the lineup spot that can be filled by a RB, WR or TE.
+const FLEX_POSITIONS = ["RB", "WR", "TE"];
+const inSelectedPosition = (p) =>
+  state.position === "FLEX" ? FLEX_POSITIONS.includes(p.position) : p.position === state.position;
+
+// FLEX has no position summary from Python, so build a short note from the RB/WR/TE averages.
+function flexNote() {
+  const rows = positionsForSeason()
+    .filter((p) => FLEX_POSITIONS.includes(p.position))
+    .sort((a, b) => b.avg - a.avg);
+  if (!rows.length) return "";
+  const scoringName = { ppr: "PPR", half: "Half PPR", standard: "Standard" }[state.scoring];
+  const avgs = rows.map((p) => `${p.position} ${p.avg.toFixed(1)}`).join(", ");
+  return `FLEX ranks running backs, wide receivers and tight ends together, for the lineup spot any of them can fill. ` +
+    `In ${scoringName} scoring, average points per week are ${avgs}. ` +
+    `Look for the highest average with a low σ when you need a dependable weekly starter.`;
+}
+
 function renderTabs() {
-  $("position-tabs").innerHTML = ["QB", "RB", "WR", "TE"].map((pos) =>
+  $("position-tabs").innerHTML = ["QB", "RB", "WR", "TE", "FLEX"].map((pos) =>
     `<button data-pos="${pos}" class="${pos === state.position ? "active" : ""}">${pos}</button>`
   ).join("");
   $("position-tabs").querySelectorAll("button").forEach((btn) => {
@@ -167,7 +185,7 @@ function setupRankingControls() {
       } else {
         state.sortKey = key;
         // Text columns and consistency (lower is better) start ascending; points start descending.
-        state.sortAsc = ["name", "team", "stdev"].includes(key);
+        state.sortAsc = ["name", "position", "team", "stdev"].includes(key);
       }
       renderRankings();
     });
@@ -180,7 +198,7 @@ function renderRankings() {
   const { sortKey, sortAsc } = state;
 
   const rows = state.data.players
-    .filter((p) => p.position === state.position)
+    .filter(inSelectedPosition)
     .map(statsFor)
     .filter((s) => s && s.games >= minGames)
     .filter((s) => !query || s.name.toLowerCase().includes(query) || s.team.toLowerCase().includes(query))
@@ -197,12 +215,15 @@ function renderRankings() {
   });
 
   const pos = positionsForSeason().find((p) => p.position === state.position);
-  $("recommendation").textContent = pos ? pos.recommendation : "";
+  $("recommendation").textContent = state.position === "FLEX" ? flexNote() : pos ? pos.recommendation : "";
+  // The position column is only useful when several positions are mixed together.
+  $("rankings-table").classList.toggle("show-pos", state.position === "FLEX");
 
   $("rankings").innerHTML = rows.length ? rows.map((p, i) => `
     <tr>
       <td>${i + 1}</td>
       <td>${esc(p.name)}</td>
+      <td class="pos-col"><span class="pos-badge pos-${esc(p.position)}">${esc(p.position)}</span></td>
       <td>${esc(p.team)}</td>
       <td class="num">${p.games}</td>
       <td class="num"><strong>${p.avg.toFixed(1)}</strong></td>
@@ -211,7 +232,7 @@ function renderRankings() {
       <td class="num">${p.stdev.toFixed(1)}</td>
       <td><button data-id="${esc(p.id)}">Compare</button></td>
     </tr>`).join("")
-    : `<tr><td colspan="9" class="note">No players match.</td></tr>`;
+    : `<tr><td colspan="10" class="note">No players match.</td></tr>`;
 
   $("rankings").querySelectorAll("button[data-id]").forEach((btn) => {
     btn.addEventListener("click", () => addToCompare(btn.dataset.id));
