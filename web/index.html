@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fantasy NFL Draft Analyzer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Fantasy NFL Draft Analyzer</h1>
+      <p class="sub" id="subtitle">Loading data…</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Position overview: one card per position plus an average-points chart -->
+    <section>
+      <h2>Points by position</h2>
+      <div class="cards" id="position-cards"></div>
+      <div class="panel">
+        <h3>Average weekly fantasy points</h3>
+        <div id="position-chart"></div>
+      </div>
+    </section>
+
+    <!-- Rankings for one position at a time -->
+    <section>
+      <h2>Player rankings</h2>
+      <div class="tabs" id="position-tabs"></div>
+      <p class="recommendation" id="recommendation"></p>
+      <div class="controls">
+        <label>Search <input type="search" id="search" placeholder="Player or team"></label>
+        <label>Min. games <input type="number" id="min-games" value="8" min="1" max="40"></label>
+      </div>
+      <div class="panel table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th data-sort="name">Player</th>
+              <th data-sort="team">Team</th>
+              <th data-sort="games" class="num">Games</th>
+              <th data-sort="avg" class="num">Avg</th>
+              <th data-sort="total" class="num">Total</th>
+              <th data-sort="peak" class="num">Best week</th>
+              <th data-sort="stdev" class="num" title="Standard deviation of weekly points. Lower = more consistent.">Consistency (σ)</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rankings"></tbody>
+        </table>
+      </div>
+      <p class="note">Click a column to sort. σ is how much a player's score swings week to week: lower means steadier.</p>
+    </section>
+
+    <!-- Side-by-side comparison of two players -->
+    <section id="compare-section">
+      <h2>Compare players</h2>
+      <div class="controls">
+        <label>Player A <input list="player-list" id="pick-a" placeholder="Type a name, e.g. C.Lamb"></label>
+        <label>Player B <input list="player-list" id="pick-b" placeholder="Type a name, e.g. J.Chase"></label>
+        <datalist id="player-list"></datalist>
+      </div>
+      <div id="compare-result" class="panel">
+        <p class="note">Pick two players above, or click "Compare" next to a player in the rankings.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    Data: public NFL weekly stats via nfl_data_py · Built with Python, SQLite, pandas and vanilla JavaScript
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
