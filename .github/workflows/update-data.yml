@@ -41,6 +41,19 @@ jobs:
           git add web/data/players.json nfl_fantasy.db
           git diff --staged --quiet || (git commit -m "Update NFL data ($(date -u +%Y-%m-%d))" && git push)
 
+      # TEMPORARY debug step: prints the identity GitHub presents to AWS (not the token itself).
+      - name: Show OIDC identity (debug)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken("sts.amazonaws.com");
+            const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+            core.info(`sub: ${claims.sub}`);
+            core.info(`aud: ${claims.aud}`);
+            core.info(`role variable: "${process.env.ROLE}"`);
+        env:
+          ROLE: ${{ vars.AWS_ROLE_ARN }}
+
       # No AWS keys are stored anywhere: GitHub proves who it is to AWS, and AWS hands back
       # temporary credentials for the IAM role saved in the AWS_ROLE_ARN repository variable.
       - name: Sign in to AWS
