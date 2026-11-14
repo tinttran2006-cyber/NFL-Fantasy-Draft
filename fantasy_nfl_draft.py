@@ -1,5 +1,6 @@
 import argparse
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -7,30 +8,53 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import nfl_data_py as nfl
 
 VALID_POSITIONS = ["QB", "RB", "WR", "TE"]
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 DB_PATH = Path(__file__).resolve().parent / "nfl_fantasy.db"
+FIRST_SEASON = 2023
+
+# SQL expression for each scoring format. Half PPR is the midpoint of standard and full PPR
+# (0.5 points per catch). Only these fixed strings are ever placed into SQL, never user input.
+SCORING_SQL = {
+    "standard": "fantasy_points",
+    "half": "(fantasy_points + fantasy_points_ppr) / 2.0",
+    "ppr": "fantasy_points_ppr",
+}
+DEFAULT_SCORING = "ppr"
 
 
-def fetch_weekly_player_stats(years=(2023, 2024)) -> pd.DataFrame:
-    """Pull public weekly NFL fantasy data from nfl_data_py and normalize it."""
-    df = nfl.import_weekly_data(
-        years=list(years),
-        columns=[
-            "player_id",
-            "season",
-            "week",
-            "player_name",
-            "position",
-            "recent_team",
-            "fantasy_points",
-        ],
-    )
+def current_season(today: date | None = None) -> int:
+    """NFL seasons start in September, so January-August still belong to last year's season."""
+    today = today or date.today()
+    return today.year if today.month >= 9 else today.year - 1
 
-    df = df[df["position"].isin(VALID_POSITIONS)].copy()
-    df["fantasy_points"] = pd.to_numeric(df["fantasy_points"], errors="coerce").fillna(0)
+
+def default_years() -> list[int]:
+    return list(range(FIRST_SEASON, current_season() + 1))
+
+
+def fetch_weekly_player_stats(years=None) -> pd.DataFrame:
+    """Pull public weekly NFL fantasy data from nflverse (via nflreadpy) and normalize it.
+
+    Only regular-season games are kept: fantasy leagues are decided in the regular season.
+    """
+    # Imported here, not at the top, so other scripts (like export_json.py) can reuse
+    # this module's functions without needing the download library installed.
+    import nflreadpy as nfl
+
+    years = list(years or default_years())
+    stats = nfl.load_player_stats(seasons=years, summary_level="week")  # returns a Polars DataFrame
+    # nflverse renamed "recent_team" to "team" in newer data; accept either.
+    team_col = "team" if "team" in stats.columns else "recent_team"
+    columns = ["player_id", "season", "week", "season_type", "player_name", "position", team_col,
+               "fantasy_points", "fantasy_points_ppr"]
+    df = pd.DataFrame(stats.select(columns).to_dicts()).rename(columns={team_col: "recent_team"})
+
+    df = df[(df["season_type"] == "REG") & df["position"].isin(VALID_POSITIONS)].drop(columns="season_type").copy()
+    df = df.dropna(subset=["player_id"])
+    for col in ["fantasy_points", "fantasy_points_ppr"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     df["player_name"] = df["player_name"].fillna("Unknown")
     df["recent_team"] = df["recent_team"].fillna("FA")
     df["position"] = df["position"].astype(str).str.upper()
@@ -46,53 +70,77 @@ def build_sqlite_db(df: pd.DataFrame, db_path: Path = DB_PATH) -> None:
         df.to_sql("player_weekly_stats", conn, if_exists="replace", index=False)
 
 
-def load_position_summary(db_path: Path = DB_PATH) -> pd.DataFrame:
-    sql = """
+def load_position_summary(db_path: Path = DB_PATH, season: int | None = None,
+                          scoring: str = DEFAULT_SCORING) -> pd.DataFrame:
+    """Per-position averages. Pass a season to limit to that year; None means all seasons."""
+    pts = SCORING_SQL[scoring]
+    sql = f"""
         SELECT
             position,
             COUNT(DISTINCT player_id) AS players,
-            AVG(fantasy_points) AS avg_points,
-            MAX(fantasy_points) AS peak_week,
+            AVG({pts}) AS avg_points,
+            MAX({pts}) AS peak_week,
             COUNT(*) AS games
         FROM player_weekly_stats
+        WHERE :season IS NULL OR season = :season
         GROUP BY position
         ORDER BY avg_points DESC
     """
     with sqlite3.connect(db_path) as conn:
-        return pd.read_sql_query(sql, conn)
+        return pd.read_sql_query(sql, conn, params={"season": season})
 
 
-def add_position_medians(db_path: Path = DB_PATH) -> pd.DataFrame:
+def add_position_medians(db_path: Path = DB_PATH, season: int | None = None,
+                         scoring: str = DEFAULT_SCORING) -> pd.DataFrame:
     """Compute median fantasy values in pandas because SQLite does not ship a median aggregate."""
     with sqlite3.connect(db_path) as conn:
-        raw = pd.read_sql_query("SELECT position, fantasy_points FROM player_weekly_stats", conn)
+        raw = pd.read_sql_query(
+            f"SELECT position, {SCORING_SQL[scoring]} AS fantasy_points FROM player_weekly_stats "
+            "WHERE :season IS NULL OR season = :season",
+            conn, params={"season": season},
+        )
 
     medians = (
         raw.groupby("position", as_index=False)["fantasy_points"]
         .agg(lambda s: s.median())
         .rename(columns={"fantasy_points": "median_points"})
     )
-    summary = load_position_summary(db_path)
+    summary = load_position_summary(db_path, season, scoring)
     return summary.merge(medians, on="position", how="left")
 
 
-def load_top_players_for_position(position: str, db_path: Path = DB_PATH, limit: int = 10) -> pd.DataFrame:
-    sql = """
+def load_top_players_for_position(position: str, db_path: Path = DB_PATH, limit: int = 10,
+                                  scoring: str = DEFAULT_SCORING) -> pd.DataFrame:
+    pts = SCORING_SQL[scoring]
+    # Group by player_id, not player_name: the data uses short names like "B.Robinson",
+    # so different players can share a name and would otherwise be merged together.
+    sql = f"""
         SELECT
-            player_name,
-            position,
-            AVG(fantasy_points) AS avg_points,
-            MAX(fantasy_points) AS peak_week,
+            s.player_id,
+            MAX(s.player_name) AS player_name,
+            s.position,
+            (
+                SELECT t.recent_team
+                FROM player_weekly_stats t
+                WHERE t.player_id = s.player_id
+                ORDER BY t.season DESC, t.week DESC
+                LIMIT 1
+            ) AS team,
+            AVG({pts}) AS avg_points,
+            MAX({pts}) AS peak_week,
             COUNT(*) AS games,
-            SUM(fantasy_points) AS total_points
-        FROM player_weekly_stats
-        WHERE position = :position
-        GROUP BY player_name, position
+            SUM({pts}) AS total_points
+        FROM player_weekly_stats s
+        WHERE s.position = :position
+        GROUP BY s.player_id, s.position
         ORDER BY avg_points DESC, total_points DESC
         LIMIT :limit
     """
     with sqlite3.connect(db_path) as conn:
-        return pd.read_sql_query(sql, conn, params={"position": position, "limit": limit})
+        df = pd.read_sql_query(sql, conn, params={"position": position, "limit": limit})
+    # Label with team so players who share a short name stay distinct in tables and charts.
+    df["label"] = df["player_name"] + " (" + df["team"] + ")"
+    return df
 
 
 def generate_recommendation(summary: pd.DataFrame, selected_position: str) -> str:
@@ -141,7 +189,7 @@ def plot_top_players(position: str, top_players: pd.DataFrame, output_dir: Path)
     sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(figsize=(10, 7))
     top_players = top_players.sort_values("avg_points", ascending=True)
-    sns.barplot(data=top_players, x="avg_points", y="player_name", palette="magma", ax=ax)
+    sns.barplot(data=top_players, x="avg_points", y="label", palette="magma", ax=ax)
     ax.set_title(f"Top {position} Players by Average Weekly Fantasy Points")
     ax.set_xlabel("Average Fantasy Points")
     ax.set_ylabel("Player")
@@ -152,12 +200,12 @@ def plot_top_players(position: str, top_players: pd.DataFrame, output_dir: Path)
     plt.close(fig)
 
 
-def build_analysis(position: str, years=(2023, 2024)) -> dict:
+def build_analysis(position: str, years=None, scoring: str = DEFAULT_SCORING) -> dict:
     df = fetch_weekly_player_stats(years=years)
     build_sqlite_db(df)
 
-    summary = add_position_medians(DB_PATH)
-    top_players = load_top_players_for_position(position, DB_PATH, limit=10)
+    summary = add_position_medians(DB_PATH, scoring=scoring)
+    top_players = load_top_players_for_position(position, DB_PATH, limit=10, scoring=scoring)
     plot_position_summary(summary, OUTPUT_DIR)
     plot_top_players(position, top_players, OUTPUT_DIR)
 
@@ -175,17 +223,18 @@ def build_analysis(position: str, years=(2023, 2024)) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fantasy draft position analyzer using public NFL weekly stats.")
     parser.add_argument("--position", default="RB", choices=VALID_POSITIONS, help="Position to analyze for fantasy draft value.")
-    parser.add_argument("--years", nargs="+", type=int, default=[2023, 2024], help="NFL seasons to load from the public data source.")
+    parser.add_argument("--years", nargs="+", type=int, default=None, help="NFL seasons to load (default: 2023 through the current season).")
+    parser.add_argument("--scoring", default=DEFAULT_SCORING, choices=list(SCORING_SQL), help="Fantasy scoring format.")
     args = parser.parse_args()
 
-    result = build_analysis(args.position, tuple(args.years))
+    result = build_analysis(args.position, args.years, args.scoring)
     summary = result["summary"]
-    print("Summary by position:")
+    print(f"Scoring: {args.scoring}\n\nSummary by position:")
     print(summary.to_string(index=False))
     print("\nSelected position analysis:")
     print(result["selected_position"].to_string())
     print("\nTop players:")
-    print(result["top_players"].to_string(index=False))
+    print(result["top_players"].drop(columns=["player_id", "label"]).to_string(index=False))
     print("\nRecommendation:")
     print(result["recommendation"])
     print(f"\nCharts saved in: {OUTPUT_DIR}")
