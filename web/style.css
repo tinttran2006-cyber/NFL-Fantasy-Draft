@@ -26,7 +26,13 @@ header { background: var(--navy); color: #fff; padding: 28px 0 24px; border-bott
 header h1 { margin: 0; font-size: 1.8rem; }
 .sub { margin: 4px 0 0; color: #c9d4e5; }
 
-section { margin: 32px 0; }
+.season-bar { position: sticky; top: 0; z-index: 10; background: #fff; border-bottom: 1px solid var(--line); padding: 10px 0; box-shadow: 0 2px 6px rgba(19, 41, 75, 0.06); }
+.season-bar .wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.season-bar label { font-weight: 600; }
+.season-bar select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.95rem; font-weight: 600; background: #fff; }
+.season-bar .note { margin: 0; }
+
+section { margin: 32px 0; scroll-margin-top: 70px; /* keep headings visible under the sticky season bar */ }
 h2 { font-size: 1.3rem; margin: 0 0 12px; }
 h3 { font-size: 1rem; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
 

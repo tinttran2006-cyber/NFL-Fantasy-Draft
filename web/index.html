@@ -14,6 +14,15 @@
     </div>
   </header>
 
+  <!-- Season filter: applies to every section below -->
+  <div class="season-bar">
+    <div class="wrap">
+      <label for="season">Season</label>
+      <select id="season"></select>
+      <span class="note" id="season-note"></span>
+    </div>
+  </div>
+
   <main class="wrap">
     <!-- Position overview: one card per position plus an average-points chart -->
     <section>
@@ -70,7 +79,7 @@
   </main>
 
   <footer class="wrap">
-    Data: public NFL weekly stats via nfl_data_py · Built with Python, SQLite, pandas and vanilla JavaScript
+    Data: public NFL regular-season weekly stats from nflverse (via nflreadpy) · Built with Python, SQLite, pandas and vanilla JavaScript
   </footer>
 
   <script src="app.js"></script>

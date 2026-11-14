@@ -1,5 +1,6 @@
 import argparse
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -11,28 +12,37 @@ import seaborn as sns
 VALID_POSITIONS = ["QB", "RB", "WR", "TE"]
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 DB_PATH = Path(__file__).resolve().parent / "nfl_fantasy.db"
+FIRST_SEASON = 2023
 
 
-def fetch_weekly_player_stats(years=(2023, 2024)) -> pd.DataFrame:
-    """Pull public weekly NFL fantasy data from nfl_data_py and normalize it."""
+def current_season(today: date | None = None) -> int:
+    """NFL seasons start in September, so January-August still belong to last year's season."""
+    today = today or date.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+def default_years() -> list[int]:
+    return list(range(FIRST_SEASON, current_season() + 1))
+
+
+def fetch_weekly_player_stats(years=None) -> pd.DataFrame:
+    """Pull public weekly NFL fantasy data from nflverse (via nflreadpy) and normalize it.
+
+    Only regular-season games are kept: fantasy leagues are decided in the regular season.
+    """
     # Imported here, not at the top, so other scripts (like export_json.py) can reuse
     # this module's functions without needing the download library installed.
-    import nfl_data_py as nfl
+    import nflreadpy as nfl
 
-    df = nfl.import_weekly_data(
-        years=list(years),
-        columns=[
-            "player_id",
-            "season",
-            "week",
-            "player_name",
-            "position",
-            "recent_team",
-            "fantasy_points",
-        ],
-    )
+    years = list(years or default_years())
+    stats = nfl.load_player_stats(seasons=years, summary_level="week")  # returns a Polars DataFrame
+    # nflverse renamed "recent_team" to "team" in newer data; accept either.
+    team_col = "team" if "team" in stats.columns else "recent_team"
+    columns = ["player_id", "season", "week", "season_type", "player_name", "position", team_col, "fantasy_points"]
+    df = pd.DataFrame(stats.select(columns).to_dicts()).rename(columns={team_col: "recent_team"})
 
-    df = df[df["position"].isin(VALID_POSITIONS)].copy()
+    df = df[(df["season_type"] == "REG") & df["position"].isin(VALID_POSITIONS)].drop(columns="season_type").copy()
+    df = df.dropna(subset=["player_id"])
     df["fantasy_points"] = pd.to_numeric(df["fantasy_points"], errors="coerce").fillna(0)
     df["player_name"] = df["player_name"].fillna("Unknown")
     df["recent_team"] = df["recent_team"].fillna("FA")
@@ -49,7 +59,8 @@ def build_sqlite_db(df: pd.DataFrame, db_path: Path = DB_PATH) -> None:
         df.to_sql("player_weekly_stats", conn, if_exists="replace", index=False)
 
 
-def load_position_summary(db_path: Path = DB_PATH) -> pd.DataFrame:
+def load_position_summary(db_path: Path = DB_PATH, season: int | None = None) -> pd.DataFrame:
+    """Per-position averages. Pass a season to limit to that year; None means all seasons."""
     sql = """
         SELECT
             position,
@@ -58,24 +69,28 @@ def load_position_summary(db_path: Path = DB_PATH) -> pd.DataFrame:
             MAX(fantasy_points) AS peak_week,
             COUNT(*) AS games
         FROM player_weekly_stats
+        WHERE :season IS NULL OR season = :season
         GROUP BY position
         ORDER BY avg_points DESC
     """
     with sqlite3.connect(db_path) as conn:
-        return pd.read_sql_query(sql, conn)
+        return pd.read_sql_query(sql, conn, params={"season": season})
 
 
-def add_position_medians(db_path: Path = DB_PATH) -> pd.DataFrame:
+def add_position_medians(db_path: Path = DB_PATH, season: int | None = None) -> pd.DataFrame:
     """Compute median fantasy values in pandas because SQLite does not ship a median aggregate."""
     with sqlite3.connect(db_path) as conn:
-        raw = pd.read_sql_query("SELECT position, fantasy_points FROM player_weekly_stats", conn)
+        raw = pd.read_sql_query(
+            "SELECT position, fantasy_points FROM player_weekly_stats WHERE :season IS NULL OR season = :season",
+            conn, params={"season": season},
+        )
 
     medians = (
         raw.groupby("position", as_index=False)["fantasy_points"]
         .agg(lambda s: s.median())
         .rename(columns={"fantasy_points": "median_points"})
     )
-    summary = load_position_summary(db_path)
+    summary = load_position_summary(db_path, season)
     return summary.merge(medians, on="position", how="left")
 
 
@@ -168,7 +183,7 @@ def plot_top_players(position: str, top_players: pd.DataFrame, output_dir: Path)
     plt.close(fig)
 
 
-def build_analysis(position: str, years=(2023, 2024)) -> dict:
+def build_analysis(position: str, years=None) -> dict:
     df = fetch_weekly_player_stats(years=years)
     build_sqlite_db(df)
 
@@ -191,10 +206,10 @@ def build_analysis(position: str, years=(2023, 2024)) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fantasy draft position analyzer using public NFL weekly stats.")
     parser.add_argument("--position", default="RB", choices=VALID_POSITIONS, help="Position to analyze for fantasy draft value.")
-    parser.add_argument("--years", nargs="+", type=int, default=[2023, 2024], help="NFL seasons to load from the public data source.")
+    parser.add_argument("--years", nargs="+", type=int, default=None, help="NFL seasons to load (default: 2023 through the current season).")
     args = parser.parse_args()
 
-    result = build_analysis(args.position, tuple(args.years))
+    result = build_analysis(args.position, args.years)
     summary = result["summary"]
     print("Summary by position:")
     print(summary.to_string(index=False))

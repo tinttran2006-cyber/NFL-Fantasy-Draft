@@ -1,4 +1,4 @@
-nfl-data-py
 pandas
 matplotlib
 seaborn
+nflreadpy

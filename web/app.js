@@ -4,6 +4,7 @@
 
 const state = {
   data: null,
+  season: "all",   // "all" or a season year as a string, e.g. "2026"
   position: "RB",
   sortKey: "avg",
   sortAsc: false,
@@ -17,9 +18,39 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 // "B.Robinson (ATL)" — the team keeps players who share a short name apart.
 const labelOf = (p) => `${p.name} (${p.team})`;
 
+// Default "Min. games" filter: higher when combining seasons, lower for one (possibly unfinished) season.
+const defaultMinGames = () => (state.season === "all" ? 8 : 3);
+
+// Weekly rows are [season, week, points, team].
+function weeksFor(p) {
+  return state.season === "all" ? p.weeks : p.weeks.filter((w) => String(w[0]) === state.season);
+}
+
+// Season stats for one player, calculated from their weekly scores. Returns null if they didn't play.
+function statsFor(p) {
+  const weeks = weeksFor(p);
+  if (!weeks.length) return null;
+  const pts = weeks.map((w) => w[2]);
+  const total = pts.reduce((a, b) => a + b, 0);
+  const avg = total / pts.length;
+  // Standard deviation = how much the score swings week to week (lower = more consistent).
+  const stdev = Math.sqrt(pts.reduce((sum, v) => sum + (v - avg) ** 2, 0) / pts.length);
+  return {
+    id: p.id,
+    name: p.name,
+    position: p.position,
+    team: weeks[weeks.length - 1][3],   // team in their latest game within the selected season(s)
+    games: pts.length,
+    avg, total, stdev,
+    peak: Math.max(...pts),
+    boom: pts.filter((v) => v >= 20).length,
+    weeks,
+  };
+}
+
 async function init() {
   try {
-    const res = await fetch("data/players.json");
+    const res = await fetch("data/players.json", { cache: "no-cache" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
   } catch (err) {
@@ -29,23 +60,52 @@ async function init() {
     return;
   }
 
-  const { seasons, players } = state.data;
-  const weekly = players.reduce((n, p) => n + p.games, 0);
+  const { seasons, players, latest, updated } = state.data;
+  const weekly = players.reduce((n, p) => n + p.weeks.length, 0);
   $("subtitle").textContent =
-    `${seasons.join("–")} seasons · ${players.length} players · ${weekly.toLocaleString()} weekly stat lines (QB, RB, WR, TE)`;
+    `${seasons[0]}–${seasons[seasons.length - 1]} seasons · ${players.length} players · ${weekly.toLocaleString()} weekly stat lines · ` +
+    `data through ${latest.season} week ${latest.week} (updated ${updated})`;
 
-  renderPositionCards();
-  renderPositionChart();
+  setupSeasonPicker();
   renderTabs();
   setupRankingControls();
   setupCompare();
+  renderAll();
+}
+
+function renderAll() {
+  const { latest } = state.data;
+  $("season-note").textContent = state.season === String(latest.season)
+    ? `${latest.season} season in progress: through week ${latest.week}`
+    : state.season === "all" ? "All seasons combined" : `${state.season} regular season`;
+  renderPositionCards();
+  renderPositionChart();
   renderRankings();
+  renderCompare();
+}
+
+/* ---------- Season picker ---------- */
+
+function setupSeasonPicker() {
+  const seasons = [...state.data.seasons].reverse();   // newest first
+  $("season").innerHTML =
+    seasons.map((s) => `<option value="${s}">${s}</option>`).join("") + `<option value="all">All seasons</option>`;
+  state.season = String(seasons[0]);
+  $("season").value = state.season;
+  $("min-games").value = defaultMinGames();
+  $("season").addEventListener("change", () => {
+    state.season = $("season").value;
+    $("min-games").value = defaultMinGames();
+    renderAll();
+  });
 }
 
 /* ---------- Position overview ---------- */
 
+const positionsForSeason = () => state.data.positions[state.season] || [];
+
 function renderPositionCards() {
-  $("position-cards").innerHTML = state.data.positions.map((p) => `
+  $("position-cards").innerHTML = positionsForSeason().map((p) => `
     <div class="card">
       <div class="pos">${esc(p.position)}</div>
       <div class="big">${p.avg.toFixed(1)}</div>
@@ -55,15 +115,15 @@ function renderPositionCards() {
 }
 
 function renderPositionChart() {
-  const rows = state.data.positions.map((p) => ({ label: p.position, value: p.avg }));
-  $("position-chart").innerHTML = barChart(rows, { color: "#13294b" });
+  const rows = positionsForSeason().map((p) => ({ label: p.position, value: p.avg }));
+  $("position-chart").innerHTML = rows.length ? barChart(rows, { color: "#13294b" }) : "";
 }
 
 /* ---------- Rankings ---------- */
 
 function renderTabs() {
-  $("position-tabs").innerHTML = state.data.positions.map((p) =>
-    `<button data-pos="${esc(p.position)}" class="${p.position === state.position ? "active" : ""}">${esc(p.position)}</button>`
+  $("position-tabs").innerHTML = ["QB", "RB", "WR", "TE"].map((pos) =>
+    `<button data-pos="${pos}" class="${pos === state.position ? "active" : ""}">${pos}</button>`
   ).join("");
   $("position-tabs").querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -99,8 +159,9 @@ function renderRankings() {
 
   const rows = state.data.players
     .filter((p) => p.position === state.position)
-    .filter((p) => p.games >= minGames)
-    .filter((p) => !query || p.name.toLowerCase().includes(query) || p.team.toLowerCase().includes(query))
+    .map(statsFor)
+    .filter((s) => s && s.games >= minGames)
+    .filter((s) => !query || s.name.toLowerCase().includes(query) || s.team.toLowerCase().includes(query))
     .sort((a, b) => {
       const x = a[sortKey], y = b[sortKey];
       const cmp = typeof x === "string" ? x.localeCompare(y) : x - y;
@@ -113,7 +174,7 @@ function renderRankings() {
     th.classList.toggle("asc", th.dataset.sort === sortKey && sortAsc);
   });
 
-  const pos = state.data.positions.find((p) => p.position === state.position);
+  const pos = positionsForSeason().find((p) => p.position === state.position);
   $("recommendation").textContent = pos ? pos.recommendation : "";
 
   $("rankings").innerHTML = rows.length ? rows.map((p, i) => `
@@ -160,23 +221,30 @@ function addToCompare(id) {
 }
 
 function renderCompare() {
-  const a = findByLabel($("pick-a").value);
-  const b = findByLabel($("pick-b").value);
+  const pa = findByLabel($("pick-a").value);
+  const pb = findByLabel($("pick-b").value);
   const out = $("compare-result");
+  if (!pa || !pb) {
+    out.innerHTML = `<p class="note">${pa || pb ? "Now pick a second player." : "Pick two players above, or click \"Compare\" next to a player in the rankings."}</p>`;
+    return;
+  }
+  const a = statsFor(pa), b = statsFor(pb);
+  const seasonText = state.season === "all" ? "any season" : `the ${state.season} season`;
   if (!a || !b) {
-    out.innerHTML = `<p class="note">${a || b ? "Now pick a second player." : "Pick two players above, or click \"Compare\" next to a player in the rankings."}</p>`;
+    const missing = [!a && labelOf(pa), !b && labelOf(pb)].filter(Boolean).join(" and ");
+    out.innerHTML = `<p class="note">${esc(missing)} didn't play in ${seasonText}. Pick another season above.</p>`;
     return;
   }
 
-  const boom = (p) => p.weeks.filter((w) => w[2] >= 20).length;
-  // [label, value A, value B, higher is better?, format]
+  // [label, value A, value B, higher is better?, decimals]
   const stats = [
     ["Position", a.position, b.position, null],
+    ["Team", a.team, b.team, null],
     ["Games", a.games, b.games, true],
     ["Avg points / week", a.avg, b.avg, true, 1],
     ["Total points", a.total, b.total, true, 1],
     ["Best week", a.peak, b.peak, true, 1],
-    ["20+ point weeks", boom(a), boom(b), true],
+    ["20+ point weeks", a.boom, b.boom, true],
     ["Consistency (σ, lower = steadier)", a.stdev, b.stdev, false, 1],
   ];
 
@@ -195,11 +263,11 @@ function renderCompare() {
 
   out.innerHTML = `
     <div class="compare-grid">
-      <div class="va head">${esc(labelOf(a))}</div><div class="label"></div><div class="head vb">${esc(labelOf(b))}</div>
+      <div class="va head">${esc(labelOf(pa))}</div><div class="label"></div><div class="head vb">${esc(labelOf(pb))}</div>
       ${rows}
     </div>
     <h3>Weekly fantasy points</h3>
-    <div class="legend"><span style="color:var(--a)">${esc(labelOf(a))}</span><span style="color:var(--b)">${esc(labelOf(b))}</span></div>
+    <div class="legend"><span style="color:var(--a)">${esc(labelOf(pa))}</span><span style="color:var(--b)">${esc(labelOf(pb))}</span></div>
     ${lineChart([a, b], ["#2f6fdb", "#e0852b"])}
     <p class="note">Gaps in a line are weeks the player didn't record stats (bye, injury, inactive).</p>`;
 }
@@ -243,6 +311,10 @@ function lineChart(players, colors) {
     if (i === 0 || Math.floor(keys[i - 1] / 100) !== season) {
       svg += `<line x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${H - B}" stroke="#c9d1dc" stroke-dasharray="3 3"></line>
               <text x="${x(i) + 4}" y="${H - B + 18}">${season} season</text>`;
+    }
+    // Week numbers along the bottom when only one season is shown.
+    if (state.season !== "all") {
+      svg += `<text x="${x(i)}" y="${H - B + 32}" text-anchor="middle" style="font-size:10px">${k % 100}</text>`;
     }
   });
   // One polyline per run of consecutive weeks, so missed games show as gaps.
