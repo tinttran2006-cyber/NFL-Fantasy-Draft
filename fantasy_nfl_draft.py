@@ -7,7 +7,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import nfl_data_py as nfl
 
 VALID_POSITIONS = ["QB", "RB", "WR", "TE"]
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
@@ -16,6 +15,10 @@ DB_PATH = Path(__file__).resolve().parent / "nfl_fantasy.db"
 
 def fetch_weekly_player_stats(years=(2023, 2024)) -> pd.DataFrame:
     """Pull public weekly NFL fantasy data from nfl_data_py and normalize it."""
+    # Imported here, not at the top, so other scripts (like export_json.py) can reuse
+    # this module's functions without needing the download library installed.
+    import nfl_data_py as nfl
+
     df = nfl.import_weekly_data(
         years=list(years),
         columns=[
