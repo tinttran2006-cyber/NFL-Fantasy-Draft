@@ -2,8 +2,7 @@
 
 A data pipeline and web dashboard for fantasy football draft research. It pulls public NFL weekly stats, stores them in SQLite, analyzes them with SQL and pandas, and shows the results in an interactive website with player rankings and head-to-head comparisons.
 
-<!-- Add a screenshot: save one as docs/screenshot.png and uncomment the next line -->
-<!-- ![Dashboard screenshot](docs/screenshot.png) -->
+<img width="1488" height="905" alt="image" src="https://github.com/user-attachments/assets/0294fd67-7cee-4dd5-a59c-f91ce0d710cf" />
 
 ## Features
 
