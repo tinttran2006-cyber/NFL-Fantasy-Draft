@@ -1,14 +1,22 @@
-# Refreshes the dashboard data every week during the season.
+# Refreshes the dashboard data every week during the NFL season and publishes it to the live site.
 # Runs on GitHub's servers for free; you can also start it by hand from the Actions tab.
 name: Update NFL data
 
 on:
   schedule:
-    - cron: "17 13 * * 2"   # Tuesdays 13:17 UTC (early Tuesday morning US time, after Monday Night Football)
+    # Tuesdays 13:17 UTC (early Tuesday morning US time, after Monday Night Football),
+    # only in season months: January and September-December.
+    - cron: "17 13 * 1,9-12 2"
   workflow_dispatch:         # adds a "Run workflow" button on GitHub
 
 permissions:
   contents: write            # lets the job commit the refreshed data back to the repo
+  id-token: write            # lets the job request a short-lived login token for AWS (OIDC)
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: tin-fantasy-nfl-dashboard
+  CLOUDFRONT_DISTRIBUTION_ID: EB94CSWF1LLJC
 
 jobs:
   update:
@@ -32,3 +40,22 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add web/data/players.json nfl_fantasy.db
           git diff --staged --quiet || (git commit -m "Update NFL data ($(date -u +%Y-%m-%d))" && git push)
+
+      # No AWS keys are stored anywhere: GitHub proves who it is to AWS, and AWS hands back
+      # temporary credentials for the IAM role saved in the AWS_ROLE_ARN repository variable.
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload new data to S3
+        run: >
+          aws s3 cp web/data/players.json "s3://${S3_BUCKET}/data/players.json"
+          --content-type application/json
+
+      - name: Clear the old data from CloudFront's cache
+        run: >
+          aws cloudfront create-invalidation
+          --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}"
+          --paths "/data/players.json"
