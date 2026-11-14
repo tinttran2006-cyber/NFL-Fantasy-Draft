@@ -77,22 +77,35 @@ def add_position_medians(db_path: Path = DB_PATH) -> pd.DataFrame:
 
 
 def load_top_players_for_position(position: str, db_path: Path = DB_PATH, limit: int = 10) -> pd.DataFrame:
+    # Group by player_id, not player_name: the data uses short names like "B.Robinson",
+    # so different players can share a name and would otherwise be merged together.
     sql = """
         SELECT
-            player_name,
-            position,
-            AVG(fantasy_points) AS avg_points,
-            MAX(fantasy_points) AS peak_week,
+            s.player_id,
+            MAX(s.player_name) AS player_name,
+            s.position,
+            (
+                SELECT t.recent_team
+                FROM player_weekly_stats t
+                WHERE t.player_id = s.player_id
+                ORDER BY t.season DESC, t.week DESC
+                LIMIT 1
+            ) AS team,
+            AVG(s.fantasy_points) AS avg_points,
+            MAX(s.fantasy_points) AS peak_week,
             COUNT(*) AS games,
-            SUM(fantasy_points) AS total_points
-        FROM player_weekly_stats
-        WHERE position = :position
-        GROUP BY player_name, position
+            SUM(s.fantasy_points) AS total_points
+        FROM player_weekly_stats s
+        WHERE s.position = :position
+        GROUP BY s.player_id, s.position
         ORDER BY avg_points DESC, total_points DESC
         LIMIT :limit
     """
     with sqlite3.connect(db_path) as conn:
-        return pd.read_sql_query(sql, conn, params={"position": position, "limit": limit})
+        df = pd.read_sql_query(sql, conn, params={"position": position, "limit": limit})
+    # Label with team so players who share a short name stay distinct in tables and charts.
+    df["label"] = df["player_name"] + " (" + df["team"] + ")"
+    return df
 
 
 def generate_recommendation(summary: pd.DataFrame, selected_position: str) -> str:
@@ -141,7 +154,7 @@ def plot_top_players(position: str, top_players: pd.DataFrame, output_dir: Path)
     sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(figsize=(10, 7))
     top_players = top_players.sort_values("avg_points", ascending=True)
-    sns.barplot(data=top_players, x="avg_points", y="player_name", palette="magma", ax=ax)
+    sns.barplot(data=top_players, x="avg_points", y="label", palette="magma", ax=ax)
     ax.set_title(f"Top {position} Players by Average Weekly Fantasy Points")
     ax.set_xlabel("Average Fantasy Points")
     ax.set_ylabel("Player")
@@ -185,7 +198,7 @@ def main() -> None:
     print("\nSelected position analysis:")
     print(result["selected_position"].to_string())
     print("\nTop players:")
-    print(result["top_players"].to_string(index=False))
+    print(result["top_players"].drop(columns=["player_id", "label"]).to_string(index=False))
     print("\nRecommendation:")
     print(result["recommendation"])
     print(f"\nCharts saved in: {OUTPUT_DIR}")
