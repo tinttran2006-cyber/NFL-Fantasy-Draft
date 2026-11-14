@@ -13,18 +13,20 @@ A data pipeline and web dashboard for fantasy football draft research. It pulls 
 - **Season filter**: view a single season (2023 through the current season) or all seasons combined
 - **Scoring formats**: PPR (default), Half PPR, or Standard
 - **Consistency metric**: standard deviation of weekly points, so you can tell steady players from boom-or-bust ones
-- **Weekly auto-update**: a scheduled GitHub Actions job refreshes the data every Tuesday during the season
+- **FLEX rankings**: RBs, WRs and TEs ranked together for the flex lineup spot
+- **Weekly auto-update**: during the season, a scheduled GitHub Actions job refreshes the data and publishes it to the live site every Tuesday
 
 ## How it works
 
 ```
-nflverse public data ──► Python (nflreadpy + pandas) ──► SQLite database ──► JSON file ──► website (HTML/CSS/JavaScript)
-                          fantasy_nfl_draft.py           nfl_fantasy.db      export_json.py  web/
+nflverse data ─► Python (nflreadpy + pandas) ─► SQLite ─► JSON ─► S3 (private) ─► CloudFront ─► browser
+                 fantasy_nfl_draft.py           .db       export_json.py          HTTPS + caching
 ```
 
 1. `fantasy_nfl_draft.py` downloads regular-season weekly stats and saves them to `nfl_fantasy.db`.
 2. `export_json.py` turns the database into `web/data/players.json`.
-3. The website in `web/` loads that JSON and does all filtering, sorting and charting in the browser. It uses no frameworks or chart libraries; the charts are drawn with plain SVG.
+3. The website in `web/` loads that JSON and does all filtering, sorting and charting in the browser. It uses no frameworks or chart libraries; the charts are plain SVG.
+4. The site is hosted in a **private S3 bucket** served through **CloudFront** using Origin Access Control, so the bucket is never public.
 
 ## Run the website locally
 
@@ -66,7 +68,16 @@ python fantasy_nfl_draft.py --position WR --scoring ppr
 
 ## Automatic updates
 
-`.github/workflows/update-data.yml` runs every Tuesday morning (after Monday Night Football). It downloads the newest stats, rebuilds the data, and commits the updated `players.json` back to the repo. You can also start it by hand from the **Actions** tab with **Run workflow**.
+`.github/workflows/update-data.yml` runs every Tuesday from September through January (after Monday Night Football). It:
+
+1. Downloads the newest stats and rebuilds `players.json`
+2. Commits the updated data to this repo
+3. Signs in to AWS with **OIDC**: GitHub gets short-lived credentials for an IAM role, so **no AWS keys are stored anywhere**
+4. Uploads the new data to S3 and clears CloudFront's cache so the live site updates
+
+The IAM role follows **least privilege**: it can only be used by this repo's `main` branch, and can only upload to the bucket's `data/` folder and clear the cache.
+
+You can also run it by hand from the **Actions** tab with **Run workflow**.
 
 ## Project structure
 
