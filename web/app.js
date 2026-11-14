@@ -5,6 +5,7 @@
 const state = {
   data: null,
   season: "all",   // "all" or a season year as a string, e.g. "2026"
+  scoring: "ppr",  // "ppr", "half" or "standard"
   position: "RB",
   sortKey: "avg",
   sortAsc: false,
@@ -21,9 +22,20 @@ const labelOf = (p) => `${p.name} (${p.team})`;
 // Default "Min. games" filter: higher when combining seasons, lower for one (possibly unfinished) season.
 const defaultMinGames = () => (state.season === "all" ? 8 : 3);
 
-// Weekly rows are [season, week, points, team].
+// Raw weekly rows are [season, week, standard points, PPR points, team].
+// Half PPR (0.5 per catch) is the midpoint of standard and full PPR.
+function pointsFor(row) {
+  const [, , std, ppr] = row;
+  if (state.scoring === "standard") return std;
+  if (state.scoring === "half") return Math.round(((std + ppr) / 2) * 100) / 100;
+  return ppr;
+}
+
+// The player's weeks in the selected season(s), as [season, week, points, team] for the selected scoring.
 function weeksFor(p) {
-  return state.season === "all" ? p.weeks : p.weeks.filter((w) => String(w[0]) === state.season);
+  return p.weeks
+    .filter((w) => state.season === "all" || String(w[0]) === state.season)
+    .map((w) => [w[0], w[1], pointsFor(w), w[4]]);
 }
 
 // Season stats for one player, calculated from their weekly scores. Returns null if they didn't play.
@@ -67,6 +79,7 @@ async function init() {
     `data through ${latest.season} week ${latest.week} (updated ${updated})`;
 
   setupSeasonPicker();
+  setupScoringPicker();
   renderTabs();
   setupRankingControls();
   setupCompare();
@@ -75,9 +88,10 @@ async function init() {
 
 function renderAll() {
   const { latest } = state.data;
-  $("season-note").textContent = state.season === String(latest.season)
+  const scoringName = { ppr: "PPR", half: "Half PPR", standard: "Standard" }[state.scoring];
+  $("season-note").textContent = `${scoringName} · ` + (state.season === String(latest.season)
     ? `${latest.season} season in progress: through week ${latest.week}`
-    : state.season === "all" ? "All seasons combined" : `${state.season} regular season`;
+    : state.season === "all" ? "All seasons combined" : `${state.season} regular season`);
   renderPositionCards();
   renderPositionChart();
   renderRankings();
@@ -100,9 +114,17 @@ function setupSeasonPicker() {
   });
 }
 
+function setupScoringPicker() {
+  $("scoring").value = state.scoring;
+  $("scoring").addEventListener("change", () => {
+    state.scoring = $("scoring").value;
+    renderAll();
+  });
+}
+
 /* ---------- Position overview ---------- */
 
-const positionsForSeason = () => state.data.positions[state.season] || [];
+const positionsForSeason = () => (state.data.positions[state.scoring] || {})[state.season] || [];
 
 function renderPositionCards() {
   $("position-cards").innerHTML = positionsForSeason().map((p) => `

@@ -31,6 +31,7 @@ header h1 { margin: 0; font-size: 1.8rem; }
 .season-bar label { font-weight: 600; }
 .season-bar select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.95rem; font-weight: 600; background: #fff; }
 .season-bar .note { margin: 0; }
+.season-bar label[for="scoring"] { margin-left: 12px; }
 
 section { margin: 32px 0; scroll-margin-top: 70px; /* keep headings visible under the sticky season bar */ }
 h2 { font-size: 1.3rem; margin: 0 0 12px; }

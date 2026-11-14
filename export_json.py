@@ -15,6 +15,7 @@ import pandas as pd
 
 from fantasy_nfl_draft import (
     DB_PATH,
+    SCORING_SQL,
     add_position_medians,
     build_sqlite_db,
     fetch_weekly_player_stats,
@@ -25,12 +26,17 @@ OUT_PATH = Path(__file__).resolve().parent / "web" / "data" / "players.json"
 
 
 def load_weekly(db_path: Path = DB_PATH) -> pd.DataFrame:
-    sql = """
-        SELECT player_id, player_name, position, recent_team, season, week, fantasy_points
-        FROM player_weekly_stats
-        ORDER BY player_id, season, week
-    """
     with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(player_weekly_stats)")}
+        if "fantasy_points_ppr" not in columns:
+            raise SystemExit("This database has no PPR points (it was built by an older version). "
+                             "Run: python export_json.py --refresh")
+        sql = """
+            SELECT player_id, player_name, position, recent_team, season, week,
+                   fantasy_points, fantasy_points_ppr
+            FROM player_weekly_stats
+            ORDER BY player_id, season, week
+        """
         return pd.read_sql_query(sql, conn)
 
 
@@ -48,18 +54,24 @@ def build_players(weekly: pd.DataFrame) -> list[dict]:
             "name": latest["player_name"],
             "position": position,
             "team": latest["recent_team"],
-            # Compact [season, week, points, team] rows keep the file small.
-            "weeks": [[int(s), int(w), round(float(p), 2), t]
-                      for s, w, p, t in zip(games["season"], games["week"], games["fantasy_points"], games["recent_team"])],
+            # Compact [season, week, standard points, PPR points, team] rows keep the file small.
+            # Half PPR is calculated in the browser as the midpoint of the two.
+            "weeks": [[int(s), int(w), round(float(std), 2), round(float(ppr), 2), t]
+                      for s, w, std, ppr, t in zip(games["season"], games["week"], games["fantasy_points"],
+                                                   games["fantasy_points_ppr"], games["recent_team"])],
         })
     return players
 
 
 def build_positions(seasons: list[int], db_path: Path = DB_PATH) -> dict:
-    """Position summaries keyed by season ("all" = every season combined)."""
+    """Position summaries keyed by scoring format, then season ("all" = every season combined)."""
+    return {scoring: build_positions_for_scoring(seasons, scoring, db_path) for scoring in SCORING_SQL}
+
+
+def build_positions_for_scoring(seasons: list[int], scoring: str, db_path: Path = DB_PATH) -> dict:
     out = {}
     for season in [None, *seasons]:
-        summary = add_position_medians(db_path, season)
+        summary = add_position_medians(db_path, season, scoring)
         out["all" if season is None else str(season)] = [
             {
                 "position": row["position"],
